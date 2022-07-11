@@ -1,0 +1,659 @@
+---
+title: "STAT5106 mid-term project - Airbnb business analysis report"
+output:
+  html_document:
+    theme: simplex
+    highlight: tango
+---
+
+# Member List - Group 9
++ Au Kwong Kuen 	1155150704
++ Lee Fung Sze		1155150476
++ Po Tin Chi		1155150320
++ Tse Hiu Hin		1155021495
++ Wong Kam Hung	1155149909
++ LAU Nga Ching Angel	1155149899
+
+```{r}
+library(tidyverse)
+library(plotly)
+library(dplyr)
+library(qdap)
+library(tm)
+library(wordcloud)
+library(SnowballC)
+library(sjmisc)
+library(ggthemes)
+library(leaflet)
+library(RColorBrewer)
+library(ggplot2)
+library(corrplot)
+```
+
+```{r}
+# Functions
+distance <- function(lat1, lng1, lat2, lng2){
+  R = 6371 #Radius of Earth in km
+  dang = sin((lat2 - lat1)/2) * sin((lat2 - lat1)/2) + cos(lat1) * cos(lat2) * sin((lng2 - lng1)/2) * sin((lng2 - lng1)/2)
+  return(R * 2*atan2(sqrt(dang),sqrt(1 - dang)))
+}
+ang2rad <- function(ang){
+  return(ang * pi / 180)
+}
+```
+
+```{r}
+airbnb <- read.csv(file = 'AB_NYC_2019.csv')
+NYsub_raw <- read.csv(file = 'DOITT_SUBWAY_STATION_01_13SEPT2010.csv')
+
+zero <- airbnb %>% filter(availability_365==0, price<4000)
+zeroAvailability <- airbnb %>% filter(availability_365==0, price<4000)%>%summarise(count = n())
+availability <- airbnb %>% filter(availability_365>0, price<4000)%>%summarise(count = n())
+combinedAvailability <-rbind(zeroAvailability, availability)
+combinedAvailability <- cbind(combinedAvailability,name=c('zero Available','Available'))
+roomtype <- zero %>% group_by(room_type)%>%summarise(count = n())
+
+
+
+colors <- c('#0000cc','#00b35c', '#ffcf66')
+```
+NYsub_raw is the subway stion of New York City from NYC Open data
+Source: https://data.cityofnewyork.us/Transportation/Subway-Stations/arq3-7z49
+
+# Subway station data desciption
++ URL(col1) - link to mta web site
++ NAME(col2) - Name of subway station
++ the_geom(col3) - Longitude and latitude of the subway station
++ LINE(col4) - Route number which stop at the station
++ NOTES(col5) - Schedule of the routes
+
+The subway station data is used to find out if there is relationship
+between hostel locations and subway station locations.
+
+```{r}
+NYsub_raw <- NYsub_raw %>%
+  mutate(
+    lat=str_extract(NYsub_raw$the_geom,"\\s[0-9,.]+") %>% as.numeric(),
+    lon=str_extract(NYsub_raw$the_geom,"-[0-9,.]+") %>% as.numeric()
+    )
+head(NYsub_raw)
+summary(NYsub_raw)
+```
+
+```{r}
+
+# price (extreme value)
+ggplot(airbnb,mapping=aes(price)) + 
+  geom_density(kernel = "gaussian")+
+  theme_classic() +
+  theme(legend.position="top")+
+  ggtitle("Price distribution (All data)")
+
+# review
+ggplot(airbnb,mapping=aes(number_of_reviews)) + 
+  geom_histogram(binwidth = 5)+
+  theme_classic() +
+  theme(legend.position="top")+
+  ggtitle("Review distribution (All data)")
+```
+
+
+As seen in the plots - Price distribution (All data) & Price distribution (All data)
+, the ranges of price and review are large there are many extreme values.
+
+
+
+```{r}
+# map
+pal <- colorFactor(palette = "Dark2",domain=airbnb$neighbourhood_group)
+
+ab_map <- leaflet() %>% 
+  setView(lng = -73.9, lat = 40.73, zoom = 10) %>% 
+  addProviderTiles(providers$Esri.OceanBasemap) %>% 
+  addCircleMarkers(data=airbnb,
+             lng=~longitude,
+             lat=~latitude,
+             popup = ~name,
+             radius=2,
+             color=~pal(neighbourhood_group),
+             stroke=FALSE,
+             fillOpacity = 0.5
+             ) %>% 
+  addCircleMarkers(data=NYsub_raw,
+             lng=~lon,
+             lat=~lat,
+             popup = ~NAME,
+             radius=1,
+             color="black",
+             stroke=1,
+             fillOpacity = 1
+             )%>% 
+  addLegend(data=airbnb,"bottomright", pal =pal, 
+            values = ~neighbourhood_group,
+            title = "NYC Airbnb Location<br>by Neighbourhood",
+            opacity = 1
+            ) %>% 
+  addLegend(data=NYsub_raw,"topright", 
+  colors =c("#000000"),
+  labels= c("Subway station"),
+  title= "NYC Subway Locations",
+  opacity = 1)
+
+ab_map
+```
+The map of hostels
+
+```{r}
+renamed_cor<-airbnb %>% rename("ID"=id, "Name"=name, "Host ID"=host_id, "Host Name"=host_name, "Neighbourhood Group"=neighbourhood_group,
+                               "Neighbourhood"=neighbourhood,"Latitude"=latitude, "Longitude"=longitude, "Room Type"=room_type,
+                               "Price"=price, "Minimum Nights"=minimum_nights, "No. of Reviews"=number_of_reviews, "Last Review"=last_review,
+                               "Reviews Per Month"=reviews_per_month,"No. of Listings"=calculated_host_listings_count, "Availability"=availability_365)
+
+airbnb_cor <- renamed_cor[, sapply(renamed_cor, is.numeric)]
+airbnb_cor <- airbnb_cor[complete.cases(airbnb_cor), ]
+correlation_matrix <- cor(airbnb_cor, method = "spearman")
+corrplot(correlation_matrix, method = "square",order = "alphabet",tl.cex =0.7,tl.col = "black",tl.srt = 45,cl.cex=0.7)
+```
+
+Obviously, Price and location of the stay have the strongest negative relation marked in dark orange as shown. 
+Availability and the reviews per month, and no. of listings with availability reveal positive relation. The possible reasons may be a sizable host offers better stay and is more approachable to travelers.
+
+
+
+```{r}
+ggplot(airbnb,aes(x = neighbourhood_group)) + 
+  geom_bar(aes(fill= neighbourhood_group))+ 
+  scale_fill_manual(values=c("#FFFF00", "#66CC33", "#006666", "#003366", "#660033"))+
+  geom_text(stat = 'count',aes(label =..count.., vjust=-0.3))+
+  labs(title="Number of Listings vs Neighbour Group", x="Neighbourhood Group", y = "Number of listings")+
+  theme_minimal()
+
+
+```
+
+In the Neighbourhood Group, Manhattan and Brooklyn have the greatest number of listing with 21,661 and 20,104 respectively, while Staten Island has the lowest number of 373 only.
+
+
+
+
+```{r}
+review_pie<-airbnb%>%group_by(neighbourhood_group)%>% summarise(Total_review1 =sum(number_of_reviews, na.rm = TRUE))
+sumreview <- sum(review_pie$Total_review1)
+review_pie$Total_review <- review_pie$Total_review1 * 100 / sumreview 
+ggplot(review_pie, aes(x = "", y = Total_review, fill = neighbourhood_group)) +
+  geom_bar(width = 1, stat = "identity")+ 
+  coord_polar("y", start = 0)+ 
+  scale_fill_brewer(palette = "Blues")+
+  geom_text(aes(label = paste0(round(Total_review), "%")), position = position_stack(vjust = 0.5), size=3)+
+  labs(title="Total Reviews vs Neighbour Group", x=element_blank(), y=element_blank())
+
+```
+
+
+<p> Taking No. of review and neighbourhood_group from the dataset, it revealed that the neighbourhood Brooklyn (43%), Manhattan(40%) and Queens (14%) received the largest number of reviews accordingly. 
+It is believed that Brooklkyn is the most popular region for Airbnb stay.</p>
+
+
+# No. of reviews vs neighbourhood & neighbourhood group
+
+```{r}
+circular_bar<-airbnb%>%group_by(neighbourhood,neighbourhood_group)%>% summarise(Total_review =sum(number_of_reviews, na.rm = TRUE))
+circular_bar<-cbind(circular_bar, id=c(1:221))
+circular_bar<-arrange(circular_bar,desc(Total_review))
+circular_bar<-circular_bar[1:30, ]
+circular_bar<-cbind(circular_bar, id2=c(1:30))
+circular_bar<-arrange(circular_bar,desc(id))
+label_data <- circular_bar
+number_of_bar <- nrow(label_data)
+angle <-90 - 360 * (label_data$id2-0.5) /number_of_bar
+label_data$hjust<-ifelse(angle < -90, 1, 0)
+label_data$angle<-ifelse(angle < -90, angle+180, angle)
+ggplot(circular_bar, aes(x=as.factor(id), y=log2(Total_review), fill=neighbourhood_group)) + 
+  geom_bar(stat="identity", alpha=0.5) +
+  ylim(-5,30) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = unit(rep(-1,4), "cm")
+  ) +
+  coord_polar(start = 0)+
+  geom_text(data=label_data, aes(x=id2, y=log2((Total_review))+3.5,
+                                 label=neighbourhood, hjust=hjust), 
+            color="black",fontface="bold",alpha=0.8, size=2.6, 
+            angle= label_data$angle, inherit.aes = FALSE )
+
+
+```
+
+
+
+Brooklyn and Manhattan got the most number of reviews as compared with Queens and the two others. For instance, sub-districts namely Williamsburg in Brooklyn and Washington Heights in Manhattan are especially representative in large number of reviews. 
+
+
+
+
+```{r}
+#Facets of Price vs Nos. of Listings of 5 neighbourhood_group 
+ggplot(data = airbnb) + 
+  geom_point(mapping = aes(x = price, y = calculated_host_listings_count,colour = "#F38434")) + 
+  facet_wrap(~ neighbourhood_group, nrow = 2)+
+  labs(title="Number of listings vs Price per Neighbour Group", x="Price", y = "Number of listings")
+
+```
+
+
+Facet Warp charts are used to show the relation between Price and various Neighbour Groups. Significant price difference is reflected in Manhattan representing pricey stay in the region. Alternatively, host offers in Bronx and Staten Island are rather much cheaper, probably to be the grimy regions in New York.
+
+
+```{r}
+ggplot(airbnb, aes(x=neighbourhood_group, y=log10(price), fill=neighbourhood_group)) + 
+  geom_jitter(aes(colour=neighbourhood_group, alpha=0.5)) +
+  geom_boxplot(alpha=0.3, outlier.colour = "black", outlier.shape = 1, notch = TRUE) +
+  theme(legend.position="none")+
+  labs(title="Price vs Neighbour Group", x="Neighbourhood Group", y = "Price (log10)")
+
+```
+
+
+On average, the Mean, Median, 1st and 3rd quantiles of hostel price in Manhattan lead the others dominantly as tallied with the previous chart too. The phenomenon may be regarded to the expensive consumption level in Manhattan, the core district in New York. 
+
+
+```{r}
+airbnb %>%
+  ggplot(aes(x=neighbourhood_group ,fill =room_type))+
+  labs(title = "Proportion of room type in different neighbourhood group",
+       x = 'Neighbourhood group',
+       y = 'Proportion')+
+  geom_bar(position = 'fill')+
+  theme_classic()
+
+```
+
+
+The reason of higher hostel price in Manhattan is due to the more portion of entire home compared with other nighbourhood group. 
+
+
+```{r}
+airbnb %>% group_by(room_type) %>%ggplot(aes(x=room_type))+
+  labs(title = "Distribution of room type",
+       x = "Room Type",
+       y= "Count")+
+  geom_bar(aes(fill=room_type),fill=colors)
+```
+
+
+
+Three room types are provided by the hosts with half shared by Entire home/apt. The penetration of Shared room is the least.
+
+
+# Price of various room types
+```{r}
+ylim1 = boxplot.stats(airbnb$price)$stats[c(1, 5)]
+airbnb%>%
+  group_by(room_type)%>%
+  ggplot(aes(x=room_type, y=price),fill=colors)+
+  labs(title = "Compariosns among room type with price",
+       x= "Room Type",
+       y= "Price")+
+  geom_violin(aes(fill=room_type))+
+  scale_fill_manual(values=colors)+
+  coord_cartesian(ylim = ylim1)+
+  theme_fivethirtyeight()+
+  theme(axis.title = element_text())
+  
+
+```
+
+
+The distribution of price for Entire home is more diverse and is also more expensive. Rather, Shared room is the cheapest among them.
+
+```{r}
+
+airbnb%>%
+  ggplot(aes(x=availability_365))+
+  labs(title = "Availability of all hostel",
+       y="Frequency",
+       x="Number of days"
+  )+
+  stat_bin(geom = "path" , pad = FALSE)+
+  theme_fivethirtyeight()+
+  theme(axis.title = element_text())
+
+
+```
+
+
+The graph depicts that most hostels are available in days below 100 days. It is also discovered that there exists outlier of zero availability (availability_365 = 0) ~39% in the graph that is worth having a deeper investigation.  
+
+
+# ZERO availability Average Price: $136 (Cheaper, middle class) vs All average price $153 
+
+```{r}
+
+colors=c("#F3BD5E", "#164597")
+fig <- combinedAvailability %>% plot_ly(labels=~name, values = ~count,marker = list(colors = colors,
+                                                                      textposition = 'inside',
+                                                                      textinfo = 'label+percent',
+                                                                      insidetextfont = list(color = '#FFFFFF'),
+                                                                      hoverinfo = 'text'
+                                                                      ))
+fig <- fig %>% add_pie(hole = 0.45, showlegend=TRUE)
+fig <- fig %>% layout(title = "Distribution of hostel with zero Availability",  showlegend = T,
+                      xaxis = list(showgrid = TRUE, zeroline = FALSE, showticklabels = FALSE),
+                      yaxis = list(showgrid = TRUE, zeroline = FALSE, showticklabels = FALSE))
+fig
+
+
+```
+
+
+The larger share depicted that the majority of availability more than one day (64.1%) but with zero availability (35.9%) also have a significant share.
+
+```{r}
+colors <- c('#0000cc','#00b35c', '#ffcf66')
+fig <- plot_ly(roomtype, labels = ~room_type, values = ~count, type = 'pie',
+               textposition = 'inside',
+               textinfo = 'label+percent',
+               insidetextfont = list(color = '#FFFFFF'),
+               hoverinfo = 'text',
+               text = ~paste('$', count, ' billions'),
+               marker = list(colors = colors,
+                             line = list(color = '#FFFFFF', width = 1.5)),
+               #The 'pull' attribute can also be used to create space between the sectors
+               showlegend = FALSE)
+fig <- fig %>% layout(title = 'Room type distribution of zero availability hotels',
+                      xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+                      yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+fig
+```
+
+
+Aligned with the overall picture, the share of room type is similar, presenting half of them are Entire home/apt (50.6%), followed by Private room (47.7%) and the least penetration of Shared room (1.69%).
+
+
+
+
+
+```{r}
+p <- ggplot(zero,aes(x=room_type, y=log10(price)), fill='neighbourhood_group') +
+  geom_jitter(aes(colour=neighbourhood_group, alpha=0.5)) +
+  geom_hline(yintercept=0) +
+  labs(title = "Price distribution of ZERO availablity by different room types and neighbourdhood area",
+       x = "Room Type",
+       y = "Price(log)")
+fig <- ggplotly(p,width = 800, height = 600)
+fig
+```
+
+
+The distribution between price and various room types under zero availability demonstrated that staying in Manhattan is pretty much more pricey than other regions. Yet, the price distribution of shared room is not obvious.
+
+```{r, out.width="100%"}
+fig <- plot_ly(zero, x = ~price, y = ~number_of_reviews, z = ~reviews_per_month,
+               color = ~room_type, colors= c('#f7a76e', '#6BA1C4','#ff0066'),
+               width = 800, height = 600)
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'price'),
+                                   yaxis = list(title = 'number_of_reviews'),
+                                   zaxis = list(title = 'reviews_per_month')),
+                      annotations = list(
+                        x = 1.13,
+                        y = 1.05,
+                        showarrow = FALSE
+                      ))
+fig
+```
+
+
+The chart tells more expensive hostels tend to have fewer reviews or none. Rationally, competitively priced hostels more popularity to have more reviews. 
+Price is demonstrated to be the most crucial incentive in motivating customers to write a review. By ranking the hostels in the descending order of number of reviews, the average price of the top 100 hostel is $89 while the bottom 100 hostel is $116.
+Comparatively, Private room dominates the markets as it exhibits more reviews than the other two room types.
+Insightfully, some rooms might be booked by the hostel official reservation system such that those hostels were always full and need not to be listed online for rental. 
+This information is crucial for the hotel management people and owners to know the market, and then conduct strategic plans. 
+
+
+
+
+# Data cleaning
+```{r}
+# NYC Airbnb
+NYab <- airbnb %>% select(-c(host_id,host_name,
+                               last_review,
+                               reviews_per_month,
+                               calculated_host_listings_count))
+
+# only take Q3-Q1 data in NYab and remove Staten Island data
+sum_price<-summary(NYab$price)
+
+NYab <- NYab %>% 
+  filter(price<=sum_price[5] & price >=sum_price[2] & neighbourhood_group!="Staten Island")
+
+# Price distribution
+ggplot(NYab,mapping=aes(price)) + 
+  geom_histogram(binwidth = 5,color="black", fill="lightblue")+
+  scale_color_grey() + 
+  theme_classic() +
+  theme(legend.position="top")+
+  ggtitle("Price distribution (Only IQR)")
+
+# NYC subway
+NYsub <- NYsub_raw %>% select(-c(URL,
+                               the_geom))
+
+
+# Initialize extra col
+NYab <- NYab %>% mutate(station_dis=rep(0,length(NYab$id)),
+                        closest_station=rep(0,length(NYab$id),),
+                        station_ID=rep(0,length(NYab$id))
+)
+
+NYsub <- NYsub %>% mutate(No_lines=str_count(NYsub$LINE,"[^-]+"))
+
+summary(NYsub)
+```
+
+
+In order to have accurate analysis, extreme values and unused data are removed.
+
+# Calculate hostels and closest subway station distance
+```{r}
+# Calculate closest subway station
+for (i in 1:length(NYab$id)){
+  dis_temp <- rep(0,length(NYsub$OBJECTID))
+  for (j in 1:length(NYsub$OBJECTID)){
+    dis_temp[j]=distance(ang2rad(NYab$latitude[i]),ang2rad(NYab$longitude[i]),ang2rad(NYsub$lat[j]),ang2rad(NYsub$lon[j]))
+  }
+  NYab$station_dis[i]=min(dis_temp)
+  NYab$closest_station[i]=NYsub$NAME[which.min(dis_temp)]
+  NYab$station_ID[i]=NYsub$OBJECTID[which.min(dis_temp)]
+}
+
+(sum_dis <- summary(NYab$station_dis))
+```
+
+
+Distance from hostels and the relative closest subway station are calculated 
+using above function.
+As we can see from the summary, there are outliers as well.
+The greatest distance from hostel to its closest station is 8.063417 Km.
+
+# Distance data summary
+```{r}
+# Remove data (distance > Q3)
+NYab_dis <- NYab %>% filter(station_dis<=sum_dis[5]) 
+
+# Visualization
+ggplot(NYab_dis,mapping=aes(station_dis)) +
+  geom_histogram(binwidth = 0.02)+
+  scale_color_grey() +
+  theme_classic() +
+  theme(legend.position="top")+
+  ggtitle("Distance from hostels to \nits closest subway station ")
+
+# ggplot(NYab_dis,mapping=aes(x=station_ID))+
+#   geom_bar()
+
+```
+
+
+Since there are extreme values in the distance as well, those values are removed
+to ensure the analysis is accurate.
+
+# Compare price and distance from subway
+```{r}
+
+# Scatter plot by room type (price vs distance from subway)
+price_dis_rmtp <- NYab_dis %>% ggplot(mapping=aes(y=station_dis,x=price,color=room_type))+
+  geom_point()+
+  geom_smooth(se=F)+
+  ggtitle("Scatter Plot of price (by room type) \nand distance from closest subway station") +
+  xlab("Price") + ylab("Distance(Km)")
+price_dis_rmtp
+```
+
+As shown in the scatter plot, there is no obvious relationship
+between distance from it closest station and the price.
+
+```{r}
+# Calculate number of hostel near each subway
+nb_bnb <- NYab_dis %>% group_by(closest_station) %>% summarise(n=n())
+nb_bnb <- rename(nb_bnb,NAME=closest_station)
+NYsub <- NYsub %>% left_join(nb_bnb,by="NAME")
+NYsub <- NYsub %>% rename(No_bnb=n)
+
+# Sort subway station by no of nearby bnb
+NYsub_bnb <- NYsub %>% arrange(desc(No_bnb))
+
+# Bubble on map station by no of bnb
+mybins <- seq(0, 500, by=100)
+palette_rev <- rev(brewer.pal(5, "Spectral"))
+mypalette <- colorBin( palette=palette_rev,
+                       domain=NYsub$No_bnb, na.color="transparent", bins=mybins)
+
+sub_bb_map <- NYsub %>% leaflet() %>% 
+  setView(lng = -73.9, lat = 40.73, zoom = 11) %>% 
+  addProviderTiles(providers$Esri.OceanBasemap) %>% 
+  addCircleMarkers(~lon, ~lat, 
+    fillColor = ~mypalette(No_bnb), fillOpacity = 0.7, color="white", radius=3, stroke=FALSE
+  ) %>%
+  addLegend( pal=mypalette, values=~No_bnb, opacity=0.9, title = "No. of nearby hostels<br>by stations", position = "bottomright" )
+sub_bb_map
+```
+
+
+
+There are many hostels located close to subway stations in Manhattan
+as shown in above map.
+Therefore, we conclude that the most crowded area is around the central park. 
+
+
+
+
+```{r, echo=FALSE, warning=FALSE}
+
+names <- read_lines(airbnb$name)
+corpus_names <- Corpus(VectorSource(names))
+
+#Clean name airbnb: remove symbols and change to space
+toSpace <- content_transformer(function (x , pattern ) gsub(pattern, " ", x))
+corpus_names <- tm_map(corpus_names, toSpace, "/")
+corpus_names <- tm_map(corpus_names, toSpace, ":")
+corpus_names <- tm_map(corpus_names, toSpace, "\\|")
+corpus_names <- tm_map(corpus_names, toSpace, "!")
+corpus_names <- tm_map(corpus_names, toSpace, ",")
+corpus_names <- tm_map(corpus_names, toSpace, "-")
+corpus_names <- tm_map(corpus_names, toSpace, "&")
+
+#Clean name airbnb: remove numbers
+corpus_names <- tm_map(corpus_names, removeNumbers)
+
+#Turn to lower case
+corpus_names <- tm_map(corpus_names, tolower)
+
+
+dtm <- TermDocumentMatrix(corpus_names)
+m <- as.matrix(dtm)
+v <- sort(rowSums(m),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+
+
+#Generate word cloud
+set.seed(1239)
+layout(matrix(c(1, 2), nrow=2), heights=c(1, 4))
+par(mar=rep(0, 4))
+plot.new()
+text(x=0.5, y=0.5, "Most common 100 words in name")
+wordcloud(words = d$word, freq = d$freq, scale = c(2, 0.5), min.freq = 100,
+          max.words=100, random.order=FALSE, rot.per=0.1, 
+          colors=brewer.pal(8, "Dark2"))
+
+head(d, 20)
+top_adj <- c("private", "cozy", "spacious", "sunny", "beautiful")
+
+data1 <- airbnb %>% select (id, name, price) %>% mutate(name = tolower(name))
+
+#add 5 more col in the selected airbnb, search if the name contain top 5 adj in each
+for (i in 1:length(top_adj)) {
+  assign(paste("has_adj_",i , sep = ""),
+         unlist(lapply(data1$name, grepl, pattern = top_adj[i])))
+}
+
+#merge the new columns to a new data2
+data2 <- cbind(data1, has_adj_1, has_adj_2, has_adj_3, has_adj_4, has_adj_5)
+
+#Find out overall median price
+med_price <- data2 %>%
+  summarise(med_price = median(price))
+mp <- unlist(med_price)
+
+avg_price <- data2 %>%
+  summarise(avg_price = mean(price))
+
+for (i in 1:5) {
+  plot <- data2 %>%
+    ggplot(aes(x = eval(parse(text = paste0("has_adj_",i))), y = price)) +
+    geom_boxplot() +
+    ylim(0,300) +
+    geom_hline (yintercept = mp, color = "red") +
+    geom_text(data=data.frame(x=0,y=0), aes(x, y), label="red line = overall median", hjust=-1, vjust=-1) +
+    xlab(paste0("has the top no.",i, " adjective ", top_adj[i]))
+  print(plot)
+}
+
+
+
+```
+
+
+A surprising finding shows that having the words "private", "cozy", and "sunny" are actually associated with lower median price. Rather, having the words "spacious" and "beautiful" have no obvious association with the median.
+
+This comparison is inspired by the following study, which analyze the relationship between how food is described in restaurant menu and other variables e.g., price
+"Word Salad: Relating Food Prices and Descriptions"
+https://homes.cs.washington.edu/~nasmith/papers/chahuneau+gimpel+routledge+scherlis+smith.emnlp12.pdf
+
+# Conclusion
+To sum up, price and location give a certain extent of influence to the market. Indeed, some side factors elements may also take into consideration.
+Despite sourcing the distance to the subway from the hostel as an additional criteria in analyzing the market situation, the result showed no strong relation where the hostels are located in.
+More importantly, it pays attention to see that the hostels with zero availability are generally with lower prices and fewer reviews. The reason behind the scenario may be those rooms are private rooms in major so that the price is the cheapest and they are not profitable to be listed on Airbnb that commission/fee is to be charged by Airbnb as the broker. That may possibly underestimate the popularity of those hostels.     
+Furthermore, it is noteworthy to see some particular names of hostels are more appealing to customers at their booking stage. To create the name of the hostel with attractive wordings, maybe an important concern for owners.
+
+# Key takeaway
+The marketing direction is believed to be led by the room type offered and for a more lucrative business.
+
+# Limitation
+The analysis is constrained by the limited availability of concrete attributes of occupancy rate resulting in the number of reviews being built as a proxy for it, thus posing the possibility of bias.
+Indeed, a single data source and the restricted time dimension is not taken into consideration in the dataset for a thorough and wider scope of analysis. 
+
+
+
+
+
+
+
+
+
+
+
+
